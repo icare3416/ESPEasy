@@ -71,8 +71,14 @@ To create/register a plugin, you have to :
     #define PLUGIN_BUILD_IR
 #endif
 
+#ifdef PLUGIN_BUILD_MINIMAL_IR
+    #define PLUGIN_BUILD_MINIMAL_OTA
+    #define PLUGIN_BUILD_IR
+#endif
+
 #ifdef PLUGIN_BUILD_NORMAL_IR
     #define PLUGIN_BUILD_NORMAL     // add stable
+    #define PLUGIN_DESCR  "Minimal 1M IR"
     #define PLUGIN_BUILD_IR
 #endif
 
@@ -111,7 +117,9 @@ To create/register a plugin, you have to :
 #endif
 
 #ifdef PLUGIN_BUILD_MINIMAL_OTA
-    #define PLUGIN_DESCR  "Minimal 1M OTA"
+    #ifndef PLUGIN_DESCR
+      #define PLUGIN_DESCR  "Minimal 1M OTA"
+    #endif
 
     #define CONTROLLER_SET_NONE
 
@@ -126,7 +134,7 @@ To create/register a plugin, you have to :
 
     #define USES_C001   // Domoticz HTTP
     #define USES_C002   // Domoticz MQTT
-    #define USES_C005   // OpenHAB MQTT
+    #define USES_C005   // Home Assistant (openHAB) MQTT
 //    #define USES_C006   // PiDome MQTT
     #define USES_C008   // Generic HTTP
     #define USES_C009   // FHEM HTTP
@@ -191,6 +199,13 @@ To create/register a plugin, you have to :
     #define USES_P035      // IRTX
 #endif
 
+#ifdef PLUGIN_BUILD_IR_EXTENDED
+    #define PLUGIN_DESCR  "IR_Extended"
+    #define USES_P016      // IR
+    #define USES_P035      // IRTX
+    // The following define is needed for extended decoding of A/C Messages and or using standardised common arguments for controlling all deeply supported A/C units
+    #define P016_P035_Extended_AC
+#endif
 
 /******************************************************************************\
  * Devices ********************************************************************
@@ -546,6 +561,7 @@ To create/register a plugin, you have to :
     #define USES_P059   // Encoder
 
     #define USES_P063   // TTP229_KeyPad
+    #define USES_P073   // 7DG
     #define USES_P079   // Wemos Motoshield
 #endif
 
@@ -555,7 +571,7 @@ To create/register a plugin, you have to :
     #define USES_C002   // Domoticz MQTT
     #define USES_C003   // Nodo telnet
     #define USES_C004   // ThingSpeak
-    #define USES_C005   // OpenHAB MQTT
+    #define USES_C005   // Home Assistant (openHAB) MQTT
     #define USES_C006   // PiDome MQTT
     #define USES_C007   // Emoncms
     #define USES_C008   // Generic HTTP
@@ -604,7 +620,6 @@ To create/register a plugin, you have to :
     #define USES_P070   // NeoPixel_Clock
     #define USES_P071   // Kamstrup401
     #define USES_P072   // HDC1080
-    #define USES_P073   // 7DG
     #define USES_P074   // TSL2561
     #define USES_P075   // Nextion
     #define USES_P076   // HWL8012   in POW r1
@@ -615,12 +630,19 @@ To create/register a plugin, you have to :
     #define USES_P081   // Cron
     #define USES_P082   // GPS
     #define USES_P083   // SGP30
+    #define USES_P084   // VEML6070
+    #define USES_P085   // AcuDC24x
+    #define USES_P086   // Receiving values according Homie convention. Works together with C014 Homie controller
+    //#define USES_P087   // Serial Proxy
 #endif
 
 
 #ifdef CONTROLLER_SET_TESTING
     #define USES_C011   // Generic HTTP Advanced
     #define USES_C012   // Blynk HTTP
+    #define USES_C014   // homie 3 & 4dev MQTT
+    #define USES_C015   // Blynk
+    #define USES_C017   // Zabbix
 #endif
 
 
@@ -706,6 +728,7 @@ To create/register a plugin, you have to :
 
 #ifdef CONTROLLER_SET_EXPERIMENTAL
   #define USES_C016   // Cache controller
+  //#define USES_C018   // TTN/RN2483
 #endif
 
 
@@ -749,7 +772,7 @@ To create/register a plugin, you have to :
 /******************************************************************************\
  * Libraries dependencies *****************************************************
 \******************************************************************************/
-#if defined(USES_P049) || defined(USES_P052) || defined(USES_P053) || defined(USES_P056) || defined(USES_P071) || defined(USES_P075) || defined(USES_P082)
+#if defined(USES_P049) || defined(USES_P052) || defined(USES_P053) || defined(USES_P056) || defined(USES_P071) || defined(USES_P075) || defined(USES_P082) || defined(USES_P087)
 // At least one plugin uses serial.
 #else
   // No plugin uses serial, so make sure software serial is not included.

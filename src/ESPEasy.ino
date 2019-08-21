@@ -86,7 +86,6 @@
 #include "ESPEasy-Globals.h"
 // Must be included after all the defines, since it is using TASKS_MAX
 #include "_Plugin_Helper.h"
-#include "define_plugin_sets.h"
 // Plugin helper needs the defined controller sets, thus include after 'define_plugin_sets.h'
 #include "_CPlugin_Helper.h"
 
@@ -119,6 +118,15 @@ void preinit() {
 #endif
 
 /*********************************************************************************************\
+ * ISR call back function for handling the watchdog.
+\*********************************************************************************************/
+void sw_watchdog_callback(void *arg) 
+{
+  yield(); // feed the WD
+  ++sw_watchdog_callback_count;
+}
+
+/*********************************************************************************************\
  * SETUP
 \*********************************************************************************************/
 void setup()
@@ -128,10 +136,13 @@ void setup()
 #endif
   WiFi.persistent(false); // Do not use SDK storage of SSID/WPA parameters
   WiFi.setAutoReconnect(false);
-  WiFi.mode(WIFI_OFF);
+  setWifiMode(WIFI_OFF);
   run_compiletime_checks();
   lowestFreeStack = getFreeStackWatermark();
   lowestRAM = FreeMem();
+#ifndef ESP32
+//  ets_isr_attach(8, sw_watchdog_callback, NULL);  // Set a callback for feeding the watchdog.
+#endif
 
   resetPluginTaskData();
   Plugin_id.resize(PLUGIN_MAX);
@@ -155,6 +166,7 @@ void setup()
   stationConnectedHandler = WiFi.onStationModeConnected(onConnected);
 	stationDisconnectedHandler = WiFi.onStationModeDisconnected(onDisconnect);
 	stationGotIpHandler = WiFi.onStationModeGotIP(onGotIP);
+  stationModeDHCPTimeoutHandler = WiFi.onStationModeDHCPTimeout(onDHCPTimeout);
   APModeStationConnectedHandler = WiFi.onSoftAPModeStationConnected(onConnectedAPmode);
   APModeStationDisconnectedHandler = WiFi.onSoftAPModeStationDisconnected(onDisonnectedAPmode);
 #endif
@@ -184,6 +196,7 @@ void setup()
   {
     RTC.bootFailedCount++;
     RTC.bootCounter++;
+    lastMixedSchedulerId_beforereboot = RTC.lastMixedSchedulerId;
     readUserVarFromRTC();
 
     if (RTC.deepSleepState == 1)
@@ -195,7 +208,8 @@ void setup()
       log = F("INIT : Warm boot #");
 
     log += RTC.bootCounter;
-
+    log += F(" Last Task: ");
+    log += decodeSchedulerId(lastMixedSchedulerId_beforereboot);
   }
   //cold boot (RTC memory empty)
   else
@@ -324,8 +338,6 @@ void setup()
   if (Settings.UDPPort != 0)
     portUDP.begin(Settings.UDPPort);
 
-  sendSysInfoUDP(3);
-
   if (systemTimePresent())
     initTime();
 
@@ -423,11 +435,6 @@ int firstEnabledMQTTController() {
   return -1;
 }
 
-bool getControllerProtocolDisplayName(byte ProtocolIndex, byte parameterIdx, String& protoDisplayName) {
-  EventStruct tmpEvent;
-  tmpEvent.idx=parameterIdx;
-  return CPluginCall(ProtocolIndex, CPLUGIN_GET_PROTOCOL_DISPLAY_NAME, &tmpEvent, protoDisplayName);
-}
 
 void updateLoopStats() {
   ++loopCounter;
@@ -512,18 +519,64 @@ void loop()
     WiFiConnectRelaxed();
     wifiSetupConnect = false;
   }
+  if (WiFi.status() == WL_DISCONNECTED) {
+    delay(100);
+  }
   if ((wifiStatus != ESPEASY_WIFI_SERVICES_INITIALIZED) || unprocessedWifiEvents()) {
     // WiFi connection is not yet available, so introduce some extra delays to
     // help the background tasks managing wifi connections
     delay(1);
-    if (wifiStatus >= ESPEASY_WIFI_CONNECTED) processConnect();
-    if (wifiStatus >= ESPEASY_WIFI_GOT_IP) processGotIP();
-    if (wifiStatus == ESPEASY_WIFI_DISCONNECTED) processDisconnect();
+    if (!processedConnect) {
+      #ifndef BUILD_NO_DEBUG
+      addLog(LOG_LEVEL_DEBUG, F("WIFI : Entering processConnect()"));
+      #endif
+      processConnect();
+    }
+    if (!processedGotIP) {
+      #ifndef BUILD_NO_DEBUG
+      addLog(LOG_LEVEL_DEBUG, F("WIFI : Entering processGotIP()"));
+      #endif
+      processGotIP();
+    }
+    if (!processedDisconnect) {
+      #ifndef BUILD_NO_DEBUG
+      addLog(LOG_LEVEL_DEBUG, F("WIFI : Entering processDisconnect()"));
+      #endif
+      processDisconnect();
+    }
+    if (!processedDHCPTimeout) {
+      #ifndef BUILD_NO_DEBUG
+      addLog(LOG_LEVEL_DEBUG, F("WIFI : DHCP timeout, Calling disconnect()"));
+      #endif
+      processedDHCPTimeout = true;
+      processDisconnect();
+    }
+    if ((wifiStatus & ESPEASY_WIFI_GOT_IP) && (wifiStatus & ESPEASY_WIFI_CONNECTED) && WiFi.isConnected()) {
+      wifiStatus = ESPEASY_WIFI_SERVICES_INITIALIZED;
+    }
   } else if (!WiFiConnected()) {
     // Somehow the WiFi has entered a limbo state.
     // FIXME TD-er: This may happen on WiFi config with AP_STA mode active.
 //    addLog(LOG_LEVEL_ERROR, F("Wifi status out sync"));
 //    resetWiFi();
+    if (loglevelActiveFor(LOG_LEVEL_ERROR)) {
+        String wifilog  = F("WIFI : Wifi status out sync WiFi.status() = ");
+        wifilog += String(WiFi.status());
+
+        addLog(LOG_LEVEL_ERROR, wifilog);
+    }
+  }
+  if (wifiStatus == ESPEASY_WIFI_DISCONNECTED) {
+    #ifndef BUILD_NO_DEBUG
+    if (loglevelActiveFor(LOG_LEVEL_DEBUG)) {
+      String wifilog  = F("WIFI : Disconnected: WiFi.status() = ");
+      wifilog += String(WiFi.status());
+
+      addLog(LOG_LEVEL_DEBUG, wifilog);
+    }
+    #endif
+    // While connecting to WiFi make sure the device has ample time to do so
+    delay(10);
   }
   if (!processedConnectAPmode) processConnectAPmode();
   if (!processedDisconnectAPmode) processDisconnectAPmode();
@@ -531,6 +584,7 @@ void loop()
 
   bool firstLoopConnectionsEstablished = checkConnectionsEstablished() && firstLoop;
   if (firstLoopConnectionsEstablished) {
+     addLog(LOG_LEVEL_INFO, F("firstLoopConnectionsEstablished"));
      firstLoop = false;
      timerAwakeFromDeepSleep = millis(); // Allow to run for "awake" number of seconds, now we have wifi.
      // schedule_all_task_device_timers(); Disabled for now, since we are now using queues for controllers.
@@ -542,6 +596,13 @@ void loop()
      }
 
 
+     RTC.bootFailedCount = 0;
+     saveToRTC();
+     sendSysInfoUDP(1);
+  }
+  // Work around for nodes that do not have WiFi connection for a long time and may reboot after N unsuccessful connect attempts
+  if ((wdcounter / 2) > 2) {
+    // Apparently the uptime is already a few minutes. Let's consider it a successful boot.
      RTC.bootFailedCount = 0;
      saveToRTC();
   }
@@ -568,17 +629,6 @@ void loop()
   backgroundtasks();
 
   if (readyForSleep()){
-    if (Settings.UseRules)
-    {
-      String event = F("System#Sleep");
-      rulesProcessing(event);
-    }
-    // Flush outstanding MQTT messages
-    runPeriodicalMQTT();
-    flushAndDisconnectAllClients();
-
-    SPIFFS.end();
-
     deepSleep(Settings.Delay);
     //deepsleep will never return, its a special kind of reboot
   }
@@ -586,6 +636,7 @@ void loop()
 
 bool checkConnectionsEstablished() {
   if (wifiStatus != ESPEASY_WIFI_SERVICES_INITIALIZED) return false;
+  if (!processedConnect) return false;
 /*
   if (firstEnabledMQTTController() >= 0) {
     // There should be a MQTT connection.
@@ -613,6 +664,7 @@ void flushAndDisconnectAllClients() {
     saveToRTC();
     delay(100); // Flush anything in the network buffers.
   }
+  process_serialWriteBuffer();
 }
 
 void runPeriodicalMQTT() {
@@ -672,7 +724,8 @@ void updateMQTTclient_connected() {
 
 void run50TimesPerSecond() {
   START_TIMER;
-  PluginCall(PLUGIN_FIFTY_PER_SECOND, 0, dummyString);
+  String dummy;
+  PluginCall(PLUGIN_FIFTY_PER_SECOND, 0, dummy);
   STOP_TIMER(PLUGIN_CALL_50PS);
 }
 
@@ -680,15 +733,16 @@ void run50TimesPerSecond() {
  * Tasks that run 10 times per second
 \*********************************************************************************************/
 void run10TimesPerSecond() {
+  String dummy;
   {
     START_TIMER;
-    PluginCall(PLUGIN_TEN_PER_SECOND, 0, dummyString);
+    PluginCall(PLUGIN_TEN_PER_SECOND, 0, dummy);
     STOP_TIMER(PLUGIN_CALL_10PS);
   }
   {
     START_TIMER;
 //    PluginCall(PLUGIN_UNCONDITIONAL_POLL, 0, dummyString);
-    PluginCall(PLUGIN_MONITOR, 0, dummyString);
+    PluginCall(PLUGIN_MONITOR, 0, dummy);
     STOP_TIMER(PLUGIN_CALL_10PSU);
   }
   if (Settings.UseRules && eventBuffer.length() > 0)
@@ -696,6 +750,10 @@ void run10TimesPerSecond() {
     rulesProcessing(eventBuffer);
     eventBuffer = "";
   }
+  #ifdef USES_C015
+  if (WiFiConnected())
+      Blynk_Run_c015();
+  #endif
   #ifndef USE_RTOS_MULTITASKING
     WebServer.handleClient();
   #endif
@@ -746,7 +804,8 @@ void runOncePerSecond()
     checkTime();
 
 //  unsigned long start = micros();
-  PluginCall(PLUGIN_ONCE_A_SECOND, 0, dummyString);
+  String dummy;
+  PluginCall(PLUGIN_ONCE_A_SECOND, 0, dummy);
 //  unsigned long elapsed = micros() - start;
 
   if (Settings.UseRules)
@@ -813,7 +872,7 @@ void runEach30Seconds()
   wdcounter++;
   if (loglevelActiveFor(LOG_LEVEL_INFO)) {
     String log;
-    log.reserve(60);
+    log.reserve(80);
     log = F("WD   : Uptime ");
     log += wdcounter / 2;
     log += F(" ConnectFailures ");
@@ -821,11 +880,16 @@ void runEach30Seconds()
     log += F(" FreeMem ");
     log += FreeMem();
     log += F(" WiFiStatus ");
-    log += wifiStatus;
+    log += WiFi.status();
+//    log += F(" ListenInterval ");
+//    log += WiFi.getListenInterval();
     addLog(LOG_LEVEL_INFO, log);
   }
   sendSysInfoUDP(1);
   refreshNodeList();
+
+  // sending $stats to homie controller
+  CPluginCall(CPLUGIN_INTERVAL, 0);
 
   #if defined(ESP8266)
   if (Settings.UseSSDP)
@@ -879,7 +943,10 @@ void SensorSendTask(byte TaskIndex)
       preValue[varNr] = UserVar[varIndex + varNr];
 
     if(Settings.TaskDeviceDataFeed[TaskIndex] == 0)  // only read local connected sensorsfeeds
-      success = PluginCall(PLUGIN_READ, &TempEvent, dummyString);
+    {
+      String dummy;
+      success = PluginCall(PLUGIN_READ, &TempEvent, dummy);
+    }
     else
       success = true;
 
@@ -943,7 +1010,8 @@ void backgroundtasks()
   process_serialWriteBuffer();
   if(!UseRTOSMultitasking){
     if (Settings.UseSerial && Serial.available()) {
-      if (!PluginCall(PLUGIN_SERIAL_IN, 0, dummyString)) {
+      String dummy;
+      if (!PluginCall(PLUGIN_SERIAL_IN, 0, dummy)) {
         serial();
       }
     }

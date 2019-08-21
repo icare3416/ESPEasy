@@ -322,16 +322,38 @@ bool allocatedOnStack(const void* address) {
 #endif // ARDUINO_ESP8266_RELEASE_2_x_x
 #endif // ESP32
 
+
+/**********************************************************
+*                                                         *
+* Deep Sleep related functions                            *
+*                                                         *
+**********************************************************/
+int getDeepSleepMax()
+{
+  int dsmax = 4294; // About 71 minutes, limited by hardware
+
+#if defined(CORE_POST_2_5_0)
+  dsmax = INT_MAX;
+
+  if ((ESP.deepSleepMax() / 1000000ULL) <= (uint64_t)INT_MAX) {
+    dsmax = (int)(ESP.deepSleepMax() / 1000000ULL);
+  }
+#endif // if defined(CORE_POST_2_5_0)
+  return dsmax;
+}
+
 bool isDeepSleepEnabled()
 {
-  if (!Settings.deepSleep)
+  if (!Settings.deepSleep) {
     return false;
+  }
 
-  //cancel deep sleep loop by pulling the pin GPIO16(D0) to GND
-  //recommended wiring: 3-pin-header with 1=RST, 2=D0, 3=GND
+  // cancel deep sleep loop by pulling the pin GPIO16(D0) to GND
+  // recommended wiring: 3-pin-header with 1=RST, 2=D0, 3=GND
   //                    short 1-2 for normal deep sleep / wakeup loop
   //                    short 2-3 to cancel sleep loop for modifying settings
-  pinMode(16,INPUT_PULLUP);
+  pinMode(16, INPUT_PULLUP);
+
   if (!digitalRead(16))
   {
     return false;
@@ -341,8 +363,10 @@ bool isDeepSleepEnabled()
 
 bool readyForSleep()
 {
-  if (!isDeepSleepEnabled())
+  if (!isDeepSleepEnabled()) {
     return false;
+  }
+
   if (!checkConnectionsEstablished()) {
     // Allow 12 seconds to establish connections
     return timeOutReached(timerAwakeFromDeepSleep + 12000);
@@ -352,86 +376,95 @@ bool readyForSleep()
 
 void deepSleep(int dsdelay)
 {
-
   checkRAM(F("deepSleep"));
+
   if (!isDeepSleepEnabled())
   {
-    //Deep sleep canceled by GPIO16(D0)=LOW
+    // Deep sleep canceled by GPIO16(D0)=LOW
     return;
   }
 
-  //first time deep sleep? offer a way to escape
-  if (lastBootCause!=BOOT_CAUSE_DEEP_SLEEP)
+  // first time deep sleep? offer a way to escape
+  if (lastBootCause != BOOT_CAUSE_DEEP_SLEEP)
   {
     addLog(LOG_LEVEL_INFO, F("SLEEP: Entering deep sleep in 30 seconds."));
+
     if (Settings.UseRules && isDeepSleepEnabled())
-      {
-        String event = F("System#NoSleep=30");
-        rulesProcessing(event);
-      }
+    {
+      String event = F("System#NoSleep=30");
+      rulesProcessing(event);
+    }
     delayBackground(30000);
-    //disabled?
+
+    // disabled?
     if (!isDeepSleepEnabled())
     {
       addLog(LOG_LEVEL_INFO, F("SLEEP: Deep sleep cancelled (GPIO16 connected to GND)"));
       return;
     }
   }
-  saveUserVarToRTC();
   deepSleepStart(dsdelay); // Call deepSleepStart function after these checks
 }
 
 void deepSleepStart(int dsdelay)
 {
   // separate function that is called from above function or directly from rules, usign deepSleep as a one-shot
-  String event = F("System#Sleep");
-  rulesProcessing(event);
-
-  RTC.deepSleepState = 1;
-  saveToRTC();
+  if (Settings.UseRules)
+  {
+    String event = F("System#Sleep");
+    rulesProcessing(event);
+  }
 
   addLog(LOG_LEVEL_INFO, F("SLEEP: Powering down to deepsleep..."));
-  delay(100); // give the node time to send above log message before going to sleep
+  RTC.deepSleepState = 1;
+  prepareShutdown();
+
   #if defined(ESP8266)
-    #if defined(CORE_POST_2_5_0)
-      uint64_t deepSleep_usec = dsdelay * 1000000ULL;
-      if ((deepSleep_usec > ESP.deepSleepMax()) || dsdelay < 0) {
-        deepSleep_usec = ESP.deepSleepMax();
-      }
-      ESP.deepSleepInstant(deepSleep_usec, WAKE_RF_DEFAULT);
-    #else
-      if (dsdelay > 4294 || dsdelay < 0)
-        dsdelay = 4294;   //max sleep time ~71 minutes
-      ESP.deepSleep((uint32_t)dsdelay * 1000000, WAKE_RF_DEFAULT);
-    #endif
-  #endif
+    # if defined(CORE_POST_2_5_0)
+  uint64_t deepSleep_usec = dsdelay * 1000000ULL;
+
+  if ((deepSleep_usec > ESP.deepSleepMax()) || (dsdelay < 0)) {
+    deepSleep_usec = ESP.deepSleepMax();
+  }
+  ESP.deepSleepInstant(deepSleep_usec, WAKE_RF_DEFAULT);
+    # else // if defined(CORE_POST_2_5_0)
+
+  if ((dsdelay > 4294) || (dsdelay < 0)) {
+    dsdelay = 4294; // max sleep time ~71 minutes
+  }
+  ESP.deepSleep((uint32_t)dsdelay * 1000000, WAKE_RF_DEFAULT);
+    # endif // if defined(CORE_POST_2_5_0)
+  #endif // if defined(ESP8266)
   #if defined(ESP32)
-    esp_sleep_enable_timer_wakeup((uint32_t)dsdelay * 1000000);
-    esp_deep_sleep_start();
-  #endif
+  esp_sleep_enable_timer_wakeup((uint32_t)dsdelay * 1000000);
+  esp_deep_sleep_start();
+  #endif // if defined(ESP32)
 }
 
 boolean remoteConfig(struct EventStruct *event, const String& string)
 {
   checkRAM(F("remoteConfig"));
   boolean success = false;
-  String command = parseString(string, 1);
+  String  command = parseString(string, 1);
 
   if (command == F("config"))
   {
     success = true;
+
     if (parseString(string, 2) == F("task"))
     {
       String configTaskName = parseStringKeepCase(string, 3);
-      String configCommand = parseStringToEndKeepCase(string, 4);
-      if (configTaskName.length() == 0 || configCommand.length() == 0)
-        return success; // TD-er: Should this be return false?
+      String configCommand  = parseStringToEndKeepCase(string, 4);
 
+      if ((configTaskName.length() == 0) || (configCommand.length() == 0)) {
+        return success; // TD-er: Should this be return false?
+      }
       int8_t index = getTaskIndexByName(configTaskName);
+
       if (index != -1)
       {
         event->TaskIndex = index;
-        success = PluginCall(PLUGIN_SET_CONFIG, event, configCommand);
+        success          = PluginCall(PLUGIN_SET_CONFIG, event, configCommand);
       }
     }
   }
@@ -440,12 +473,12 @@ boolean remoteConfig(struct EventStruct *event, const String& string)
 
 int8_t getTaskIndexByName(const String& TaskNameSearch)
 {
-
   for (byte x = 0; x < TASKS_MAX; x++)
   {
     LoadTaskSettings(x);
     String TaskName = getTaskDeviceName(x);
-    if ((TaskName.length() != 0 ) && (TaskNameSearch.equalsIgnoreCase(TaskName)))
+
+    if ((TaskName.length() != 0) && (TaskNameSearch.equalsIgnoreCase(TaskName)))
     {
       return x;
     }
@@ -455,7 +488,7 @@ int8_t getTaskIndexByName(const String& TaskNameSearch)
 
 /*********************************************************************************************\
    Device GPIO name functions to share flash strings
-  \*********************************************************************************************/
+\*********************************************************************************************/
 String formatGpioDirection(gpio_direction direction) {
   switch (direction) {
     case gpio_input:         return F("&larr; ");
@@ -466,8 +499,9 @@ String formatGpioDirection(gpio_direction direction) {
 }
 
 String formatGpioLabel(int gpio, bool includeWarning) {
-  int pinnr = -1;
+  int  pinnr = -1;
   bool input, output, warning;
+
   if (getGpioInfo(gpio, pinnr, input, output, warning)) {
     if (!includeWarning) {
       return createGPIO_label(gpio, pinnr, true, true, false);
@@ -479,6 +513,7 @@ String formatGpioLabel(int gpio, bool includeWarning) {
 
 String formatGpioName(const String& label, gpio_direction direction, bool optional) {
   int reserveLength = 5 /* "GPIO " */ + 8 /* "&#8644; " */ + label.length();
+
   if (optional) {
     reserveLength += 11;
   }
@@ -487,8 +522,10 @@ String formatGpioName(const String& label, gpio_direction direction, bool option
   result += F("GPIO ");
   result += formatGpioDirection(direction);
   result += label;
-  if (optional)
+
+  if (optional) {
     result += F("(optional)");
+  }
   return result;
 }
 
@@ -818,14 +855,12 @@ String checkTaskSettings(byte taskIndex) {
   return err;
 }
 
-
-
 /********************************************************************************************\
-  Find device index corresponding to task number setting
-  \*********************************************************************************************/
+   Find device index corresponding to task number setting
+ \*********************************************************************************************/
 byte getDeviceIndex(byte Number)
 {
-  for (byte x = 0; x <= deviceCount ; x++) {
+  for (byte x = 0; x <= deviceCount; x++) {
     if (Device[x].Number == Number) {
       return x;
     }
@@ -834,21 +869,21 @@ byte getDeviceIndex(byte Number)
 }
 
 /********************************************************************************************\
-  Find name of plugin given the plugin device index..
-  \*********************************************************************************************/
+   Find name of plugin given the plugin device index..
+ \*********************************************************************************************/
 String getPluginNameFromDeviceIndex(byte deviceIndex) {
   String deviceName = "";
+
   Plugin_ptr[deviceIndex](PLUGIN_GET_DEVICENAME, 0, deviceName);
   return deviceName;
 }
 
-
 /********************************************************************************************\
-  Find protocol index corresponding to protocol setting
-  \*********************************************************************************************/
+   Find protocol index corresponding to protocol setting
+ \*********************************************************************************************/
 byte getProtocolIndex(byte Number)
 {
-  for (byte x = 0; x <= protocolCount ; x++) {
+  for (byte x = 0; x <= protocolCount; x++) {
     if (Protocol[x].Number == Number) {
       return x;
     }
@@ -893,29 +928,31 @@ bool GetArgv(const char *string, String& argvString, unsigned int argc) {
 
 bool GetArgvBeginEnd(const char *string, const unsigned int argc, int& pos_begin, int& pos_end) {
   pos_begin = -1;
-  pos_end = -1;
+  pos_end   = -1;
   size_t string_len = strlen(string);
   unsigned int string_pos = 0, argc_pos = 0;
-  char c, d; // c = current char, d = next char (if available)
-  boolean parenthesis = false;
-  char matching_parenthesis = '"';
+  boolean parenthesis          = false;
+  char    matching_parenthesis = '"';
 
   while (string_pos < string_len)
   {
+    char c, d; // c = current char, d = next char (if available)
     c = string[string_pos];
     d = 0;
+
     if ((string_pos + 1) < string_len) {
       d = string[string_pos + 1];
     }
 
-    if       (!parenthesis && c == ' ' && d == ' ') {}
-    else if  (!parenthesis && c == ' ' && d == ',') {}
-    else if  (!parenthesis && c == ',' && d == ' ') {}
-    else if  (!parenthesis && c == ' ' && d >= 33 && d <= 126) {}
-    else if  (!parenthesis && c == ',' && d >= 33 && d <= 126) {}
-    else if  (c == '"' || c == '\'' || c == '[') {
-      parenthesis = true;
+    if       (!parenthesis && (c == ' ') && (d == ' ')) {}
+    else if  (!parenthesis && (c == ' ') && (d == ',')) {}
+    else if  (!parenthesis && (c == ',') && (d == ' ')) {}
+    else if  (!parenthesis && (c == ' ') && (d >= 33) && (d <= 126)) {}
+    else if  (!parenthesis && (c == ',') && (d >= 33) && (d <= 126)) {}
+    else if  ((c == '"') || (c == '\'') || (c == '[')) {
+      parenthesis          = true;
       matching_parenthesis = c;
+
       if (c == '[') {
         matching_parenthesis = ']';
       }
@@ -924,11 +961,11 @@ bool GetArgvBeginEnd(const char *string, const unsigned int argc, int& pos_begin
     {
       if (pos_begin == -1) {
         pos_begin = string_pos;
-        pos_end = string_pos;
+        pos_end   = string_pos;
       }
       ++pos_end;
 
-      if ((!parenthesis && (d == ' ' || d == ',' || d == 0)) || (parenthesis && (d == matching_parenthesis))) // end of word
+      if ((!parenthesis && ((d == ' ') || (d == ',') || (d == 0))) || (parenthesis && (d == matching_parenthesis))) // end of word
       {
         if (d == matching_parenthesis) {
           parenthesis = false;
@@ -940,7 +977,7 @@ bool GetArgvBeginEnd(const char *string, const unsigned int argc, int& pos_begin
           return true;
         }
         pos_begin = -1;
-        pos_end = -1;
+        pos_end   = -1;
         string_pos++;
       }
     }
@@ -1257,6 +1294,18 @@ unsigned long FreeMem(void)
 }
 
 
+unsigned long getMaxFreeBlock()
+{
+  unsigned long freemem = FreeMem();
+  #ifdef CORE_POST_2_5_0
+    // computing max free block is a rather extensive operation, so only perform when free memory is already low.
+    if (freemem < 6144) {
+      return ESP.getMaxFreeBlockSize();
+    }
+  #endif
+  return freemem;
+}
+
 
 
 /********************************************************************************************\
@@ -1544,6 +1593,21 @@ void addToLog(byte logLevel, const char *line)
 
 
 /********************************************************************************************\
+  Clean up all before going to sleep or reboot.
+  \*********************************************************************************************/
+void prepareShutdown()
+{
+  runPeriodicalMQTT();  // Flush outstanding MQTT messages
+  process_serialWriteBuffer();
+  flushAndDisconnectAllClients();
+  saveUserVarToRTC();
+  saveToRTC();
+  SPIFFS.end();
+  delay(100); // give the node time to flush all before reboot or sleep
+}
+
+
+/********************************************************************************************\
   Delayed reboot, in case of issues, do not reboot with high frequency as it might not help...
   \*********************************************************************************************/
 void delayedReboot(int rebootDelay)
@@ -1560,9 +1624,7 @@ void delayedReboot(int rebootDelay)
 }
 
 void reboot() {
-  // FIXME TD-er: Should network connections be actively closed or does this introduce new issues?
-  flushAndDisconnectAllClients();
-  SPIFFS.end();
+  prepareShutdown();
   #if defined(ESP32)
     ESP.restart();
   #else
@@ -1728,8 +1790,8 @@ void transformValue(
       String tempValueFormat = valueFormat;
       int tempValueFormatLength = tempValueFormat.length();
       const int invertedIndex = tempValueFormat.indexOf('!');
-      const bool inverted = invertedIndex >= 0 ? 1 : 0;
-      if (inverted)
+      const int inverted = invertedIndex >= 0 ? 1 : 0;
+      if (inverted != 0)
         tempValueFormat.remove(invertedIndex,1);
 
       const int rightJustifyIndex = tempValueFormat.indexOf('R');
@@ -2096,9 +2158,10 @@ unsigned int op_arg_count(const char c)
 
 int Calculate(const char *input, float* result)
 {
+  #define TOKEN_LENGTH 25
   checkRAM(F("Calculate"));
   const char *strpos = input, *strend = input + strlen(input);
-  char token[25];
+  char token[TOKEN_LENGTH];
   char c, oc, *TokenPos = token;
   char stack[32];       // operator stack
   unsigned int sl = 0;  // stack length
@@ -2116,6 +2179,7 @@ int Calculate(const char *input, float* result)
 
   while (strpos < strend)
   {
+	  if ((TokenPos - &token[0]) >= (TOKEN_LENGTH - 1)) return CALCULATE_ERROR_STACK_OVERFLOW;
     // read one token from the input stream
     oc = c;
     c = *strpos;
@@ -2135,7 +2199,7 @@ int Calculate(const char *input, float* result)
         error = RPNCalculate(token);
         TokenPos = token;
         if (error)return error;
-        while (sl > 0)
+        while (sl > 0 && sl < 31)
         {
           sc = stack[sl - 1];
           // While there is an operator token, op2, at the top of the stack
@@ -2164,6 +2228,7 @@ int Calculate(const char *input, float* result)
       // If the token is a left parenthesis, then push it onto the stack.
       else if (c == '(')
       {
+		if (sl >= 32) return CALCULATE_ERROR_STACK_OVERFLOW;
         stack[sl] = c;
         ++sl;
       }
@@ -2179,6 +2244,7 @@ int Calculate(const char *input, float* result)
           error = RPNCalculate(token);
           TokenPos = token;
           if (error)return error;
+          if (sl > 32) return CALCULATE_ERROR_STACK_OVERFLOW;
           sc = stack[sl - 1];
           if (sc == '(')
           {
@@ -2200,7 +2266,8 @@ int Calculate(const char *input, float* result)
         sl--;
 
         // If the token at the top of the stack is a function token, pop it onto the token queue.
-        if (sl > 0)
+		// FIXME TD-er: This sc value is never used, it is re-assigned a new value before it is being checked.
+        if (sl > 0 && sl < 32)
           sc = stack[sl - 1];
 
       }
@@ -2297,13 +2364,14 @@ int CalculateParam(const char *TmpStr) {
 
 void SendValueLogger(byte TaskIndex)
 {
+#if !defined(BUILD_NO_DEBUG) || defined(FEATURE_SD)
   bool featureSD = false;
   #ifdef FEATURE_SD
     featureSD = true;
   #endif
-
-  String logger;
+  
   if (featureSD || loglevelActiveFor(LOG_LEVEL_DEBUG)) {
+    String logger;
     LoadTaskSettings(TaskIndex);
     byte DeviceIndex = getDeviceIndex(Settings.TaskDeviceNumber[TaskIndex]);
     for (byte varNr = 0; varNr < Device[DeviceIndex].ValueCount; varNr++)
@@ -2322,10 +2390,9 @@ void SendValueLogger(byte TaskIndex)
       logger += "\r\n";
     }
 
-#ifndef BUILD_NO_DEBUG
     addLog(LOG_LEVEL_DEBUG, logger);
-#endif
   }
+#endif
 
 #ifdef FEATURE_SD
   String filename = F("VALUES.CSV");
@@ -2462,7 +2529,7 @@ void checkRAM( String &a ) {
 
 //#ifdef PLUGIN_BUILD_TESTING
 
-#define isdigit(n) (n >= '0' && n <= '9')
+//#define isdigit(n) (n >= '0' && n <= '9') //Conflicts with ArduJson 6+, when this lib is used there is no need for this macro
 
 /********************************************************************************************\
   Generate a tone of specified frequency on pin
@@ -2672,6 +2739,7 @@ void ArduinoOTAInit()
 
   ArduinoOTA.onStart([]() {
       serialPrintln(F("OTA  : Start upload"));
+      ArduinoOTAtriggered = true;
       SPIFFS.end(); //important, otherwise it fails
   });
 
@@ -2717,12 +2785,11 @@ int calc_CRC16(const String& text) {
 int calc_CRC16(const char *ptr, int count)
 {
     int  crc;
-    char i;
     crc = 0;
     while (--count >= 0)
     {
         crc = crc ^ (int) *ptr++ << 8;
-        i = 8;
+        char i = 8;
         do
         {
             if (crc & 0x8000)
@@ -2776,6 +2843,7 @@ float compute_humidity_from_dewpoint(float temperature, float dew_temperature) {
 **********************************************************/
 
 void savePortStatus(uint32_t key, struct portStatusStruct &tempStatus) {
+  // FIXME TD-er: task and monitor are unsigned, should we only check for == ????
   if (tempStatus.task<=0 && tempStatus.monitor<=0 && tempStatus.command<=0)
     globalMapPortStatus.erase(key);
   else
@@ -2823,4 +2891,84 @@ uint16_t getPluginFromKey(uint32_t key) {
 
 uint16_t getPortFromKey(uint32_t key) {
   return (uint16_t)(key);
+}
+
+//#######################################################################################################
+//############################ quite acurate but slow color converter####################################
+//#######################################################################################################
+// uses H 0..360 S 1..100 I/V 1..100 (according to homie convention)
+// Source https://blog.saikoled.com/post/44677718712/how-to-convert-from-hsi-to-rgb-white
+
+void HSV2RGB(float H, float S, float I, int rgb[3]) {
+  int r, g, b;
+  H = fmod(H,360); // cycle H around to 0-360 degrees
+  H = 3.14159*H/(float)180; // Convert to radians.
+  S = S / 100;
+  S = S>0?(S<1?S:1):0; // clamp S and I to interval [0,1]
+  I = I / 100;
+  I = I>0?(I<1?I:1):0;
+
+  // Math! Thanks in part to Kyle Miller.
+  if(H < 2.09439) {
+    r = 255*I/3*(1+S*cos(H)/cos(1.047196667-H));
+    g = 255*I/3*(1+S*(1-cos(H)/cos(1.047196667-H)));
+    b = 255*I/3*(1-S);
+  } else if(H < 4.188787) {
+    H = H - 2.09439;
+    g = 255*I/3*(1+S*cos(H)/cos(1.047196667-H));
+    b = 255*I/3*(1+S*(1-cos(H)/cos(1.047196667-H)));
+    r = 255*I/3*(1-S);
+  } else {
+    H = H - 4.188787;
+    b = 255*I/3*(1+S*cos(H)/cos(1.047196667-H));
+    r = 255*I/3*(1+S*(1-cos(H)/cos(1.047196667-H)));
+    g = 255*I/3*(1-S);
+  }
+  rgb[0]=r;
+  rgb[1]=g;
+  rgb[2]=b;
+}
+
+// uses H 0..360 S 1..100 I/V 1..100 (according to homie convention)
+// Source https://blog.saikoled.com/post/44677718712/how-to-convert-from-hsi-to-rgb-white
+
+void HSV2RGBW(float H, float S, float I, int rgbw[4]) {
+  int r, g, b, w;
+  float cos_h, cos_1047_h;
+  H = fmod(H,360); // cycle H around to 0-360 degrees
+  H = 3.14159*H/(float)180; // Convert to radians.
+  S = S / 100;
+  S = S>0?(S<1?S:1):0; // clamp S and I to interval [0,1]
+  I = I / 100;
+  I = I>0?(I<1?I:1):0;
+
+  if(H < 2.09439) {
+    cos_h = cos(H);
+    cos_1047_h = cos(1.047196667-H);
+    r = S*255*I/3*(1+cos_h/cos_1047_h);
+    g = S*255*I/3*(1+(1-cos_h/cos_1047_h));
+    b = 0;
+    w = 255*(1-S)*I;
+  } else if(H < 4.188787) {
+    H = H - 2.09439;
+    cos_h = cos(H);
+    cos_1047_h = cos(1.047196667-H);
+    g = S*255*I/3*(1+cos_h/cos_1047_h);
+    b = S*255*I/3*(1+(1-cos_h/cos_1047_h));
+    r = 0;
+    w = 255*(1-S)*I;
+  } else {
+    H = H - 4.188787;
+    cos_h = cos(H);
+    cos_1047_h = cos(1.047196667-H);
+    b = S*255*I/3*(1+cos_h/cos_1047_h);
+    r = S*255*I/3*(1+(1-cos_h/cos_1047_h));
+    g = 0;
+    w = 255*(1-S)*I;
+  }
+
+  rgbw[0]=r;
+  rgbw[1]=g;
+  rgbw[2]=b;
+  rgbw[3]=w;
 }

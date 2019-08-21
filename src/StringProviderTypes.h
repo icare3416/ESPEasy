@@ -1,8 +1,11 @@
 #ifndef STRING_PROVIDER_TYPES_H
 #define STRING_PROVIDER_TYPES_H
 
+struct LabelType;
+//enum LabelType::Enum : short;
+
 struct LabelType {
-enum Enum {
+enum Enum : short {
   UNIT_NR,
   UNIT_NAME,
   HOST_NAME,
@@ -23,6 +26,8 @@ enum Enum {
   BOOT_TYPE,                   // Cold boot
   BOOT_COUNT,                  // 0
   RESET_REASON,                // Software/System restart
+  LAST_TASK_BEFORE_REBOOT,     // Last scheduled task.
+  SW_WD_COUNT,
 
   WIFI_CONNECTION,             // 802.11G
   WIFI_RSSI,                   // -67
@@ -87,14 +92,13 @@ enum Enum {
 
 
 };
-
-
-
 };
+
 
 String getInternalLabel(LabelType::Enum label);
 String getLabel(LabelType::Enum label);
 String getValue(LabelType::Enum label);
+String getExtendedValue(LabelType::Enum label);
 void stream_next_json_object_value(LabelType::Enum label);
 void stream_last_json_object_value(LabelType::Enum label);
 void addRowLabelValue(LabelType::Enum label);

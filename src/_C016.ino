@@ -46,6 +46,9 @@ bool CPlugin_016(byte function, struct EventStruct *event, String& string)
         Protocol[protocolCount].usesPassword = false;
         Protocol[protocolCount].defaultPort = 80;
         Protocol[protocolCount].usesID = false;
+        Protocol[protocolCount].usesHost = false;
+        Protocol[protocolCount].usesPort = false;
+        Protocol[protocolCount].usesSampleSets = false;
         break;
       }
 
@@ -136,9 +139,12 @@ bool C016_startCSVdump() {
 }
 
 String C016_getCacheFileName(bool& islast) {
-  return ControllerCache.getPeakCacheFileName(islast);
+  return ControllerCache.getPeekCacheFileName(islast);
 }
 
+bool C016_deleteOldestCacheBlock() {
+  return ControllerCache.deleteOldestCacheBlock();
+}
 
 bool C016_getCSVline(
   unsigned long& timestamp,

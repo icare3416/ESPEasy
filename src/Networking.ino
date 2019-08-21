@@ -7,7 +7,15 @@
 //  #endif
 
 #include <lwip/netif.h>
+#ifdef ESP8266
+  #if !defined(ARDUINO_ESP8266_RELEASE_2_4_0) && !defined(ARDUINO_ESP8266_RELEASE_2_3_0)
+    #define SUPPORT_ARP
+  #endif
+#endif
+
+#ifdef SUPPORT_ARP
 #include <lwip/etharp.h>
+#endif
 
 /*********************************************************************************************\
    Syslog client
@@ -135,7 +143,7 @@ void checkUDP()
                 if (loglevelActiveFor(LOG_LEVEL_DEBUG_MORE)) {
                   char macaddress[20];
                   formatMAC(mac, macaddress);
-                  char log[80];
+                  char log[80] = {0};
                   sprintf_P(log, PSTR("UDP  : %s,%s,%u"), macaddress, formatIP(ip).c_str(), unit);
                   addLog(LOG_LEVEL_DEBUG_MORE, log);
                 }
@@ -149,7 +157,8 @@ void checkUDP()
                 TempEvent.Data = reinterpret_cast<byte*>(&packetBuffer[0]);
                 TempEvent.Par1 = remoteIP[3];
                 TempEvent.Par2 = len;
-                PluginCall(PLUGIN_UDP_IN, &TempEvent, dummyString);
+                String dummy;
+                PluginCall(PLUGIN_UDP_IN, &TempEvent, dummy);
                 CPluginCall(CPLUGIN_UDP_IN, &TempEvent);
                 break;
               }
@@ -482,7 +491,7 @@ void SSDP_send(byte method) {
                                    "LOCATION: http://%u.%u.%u.%u:80/ssdp.xml\r\n" // WiFi.localIP(),
                                    "\r\n");
   {
-    char uuid[64];
+    char uuid[64] = {0};
     uint32_t chipId = ESP.getChipId();
     sprintf_P(uuid, PSTR("38323636-4558-4dda-9188-cda0e6%02x%02x%02x"),
               (uint16_t) ((chipId >> 16) & 0xff),
@@ -721,6 +730,7 @@ bool connectClient(WiFiClient& client, IPAddress ip, uint16_t port)
     return false;
   }
   bool connected = (client.connect(ip, port) == 1);
+  yield();
   if (!connected) {
     sendGratuitousARP_now();
   }
@@ -743,6 +753,7 @@ bool resolveHostByName(const char* aHostname, IPAddress& aResult) {
 #else
   bool resolvedIP = WiFi.hostByName(aHostname, aResult, CONTROLLER_CLIENTTIMEOUT_DFLT) == 1;
 #endif
+  yield();
   if (!resolvedIP) {
     sendGratuitousARP_now();
   }
@@ -778,7 +789,11 @@ bool beginWiFiUDP_randomPort(WiFiUDP& udp) {
 }
 
 void sendGratuitousARP() {
-#ifndef ESP32
+  if (!WiFiConnected()) {
+    return;
+  }
+#ifdef SUPPORT_ARP
+
   // See https://github.com/letscontrolit/ESPEasy/issues/2374
   START_TIMER;
   netif *n = netif_list;
